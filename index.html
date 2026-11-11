@@ -50,7 +50,7 @@ input.q{font:inherit;padding:7px 11px;border-radius:8px;border:1px solid var(--b
 <div class="grid">
 <label class="drop" id="d1"><input type="file" accept=".xlsx,.xls,.csv" data-k="ib"><b>1. IB Shipment</b><small id="n1">Subir archivo</small></label>
 <label class="drop" id="d2"><input type="file" accept=".xlsx,.xls,.csv" data-k="kx"><b>2. Reporte Kardex</b><small id="n2">Subir archivo</small></label>
-<label class="drop" id="d3"><input type="file" accept=".xlsx,.xls,.csv" data-k="wms"><b>3. WMS detalle por OC</b><small id="n3">Opcional · se usa al elegir una OC</small></label>
+<label class="drop" id="d3"><input type="file" accept=".xlsx,.xls,.csv" data-k="wms" multiple><b>3. WMS detalle por OC</b><small id="n3">Subir uno o varios archivos</small></label>
 </div>
 </div>
 
@@ -59,104 +59,124 @@ input.q{font:inherit;padding:7px 11px;border-radius:8px;border:1px solid var(--b
 <div class="card">
 <div class="row"><input class="q" id="q" placeholder="Buscar OC…"><select id="f"><option value="">Todas</option><option value="DIF">Con diferencia</option><option value="OK">Cuadran</option></select><button id="ex">Exportar resumen</button></div>
 <div class="wrap"><table id="tb"></table></div>
-<p class="m">Toca una OC con diferencia para ver los productos.</p>
+<p class="m">Toca una OC con diferencia para filtrar sus productos abajo.</p>
 </div>
-<div class="card" id="det" hidden></div>
+<div class="card" id="rv"></div>
 </div>
 <div class="foot">NEXOCORP</div>
 </main>
 <script>
-const S={ib:null,kx:null,wms:null,sel:null};
-const norm=s=>String(s??'').trim().toUpperCase().replace(/^0+(?=\d)/,'');
+const S={ib:null,kx:null,wms:[],map:{}},F={oc:'',q:'',only:true,noCan:true};
 const $=id=>document.getElementById(id);
-function sheetRows(wb,test){
-  for(const n of wb.SheetNames){
-    const a=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,defval:null,raw:true});
-    for(let i=0;i<Math.min(a.length,40);i++){
-      const h=(a[i]||[]).map(x=>String(x??''));
-      if(test(h)){const hd=h.map((x,j)=>x||('Col'+(j+1)));return {hd,rows:a.slice(i+1).filter(r=>r.some(v=>v!==null&&v!==''))}}
-    }
-  }
-  return null;
-}
-const first=h=>h.filter(x=>x).length>=3;
-document.querySelectorAll('input[type=file]').forEach(inp=>inp.onchange=async e=>{
-  const f=e.target.files[0];if(!f)return;const k=inp.dataset.k;
-  const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
-  let t=first;
-  if(k==='ib')t=h=>h.some(x=>/nro asn/i.test(x));
-  if(k==='kx')t=h=>h.some(x=>/^documento$/i.test(x));
-  const d=sheetRows(wb,t);
-  if(!d){alert('No pude leer la tabla de '+f.name);return}
-  S[k]=d;const i={ib:1,kx:2,wms:3}[k];
-  $('d'+i).classList.add('ok');$('n'+i).textContent=f.name+' · '+d.rows.length+' filas';
-  if(k==='wms')guessWms();
-  run();
-});
+const norm=s=>String(s??'').trim().toUpperCase().replace(/^0+(?=\d)/,'');
+const ock=s=>{const m=String(s??'').match(/\d{4,}/);return m?m[0].replace(/^0+/,''):''};
+const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const col=(hd,re)=>hd.findIndex(x=>re.test(x));
+const iso=v=>{if(v==null||v==='')return '';if(v instanceof Date&&!isNaN(v))return v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');const t=String(v);let m=t.match(/\d{4}-\d{2}-\d{2}/);if(m)return m[0];m=t.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);return m?m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0'):''};
+const dsp=i=>i?i.split('-').reverse().join('/'):'—';
+const rng=e=>!e?'—':e.a===e.b?dsp(e.a):dsp(e.a)+' → '+dsp(e.b);
+const upd=(M,k,f)=>{if(!f)return;const e=M[k]??={a:f,b:f};if(f<e.a)e.a=f;if(f>e.b)e.b=f};
+let IBF={},KXF={},XC=0;
+const tk=x=>new Set(String(x??'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim().split(' ').filter(Boolean));
+const fz=(M,d,used)=>{if(!M)return;const a=tk(d);let b,bs=0;for(const [n,s] of Object.entries(M)){if(used.has(s))continue;const t=tk(n);let i=0;a.forEach(x=>t.has(x)&&i++);const j=i/(a.size+t.size-i||1);if(j>bs){bs=j;b=s}}return bs>=.75?b:undefined};
+const first=h=>h.filter(x=>x).length>=3;
+function tbl(a,test){for(let i=0;i<Math.min(a.length,40);i++){const h=(a[i]||[]).map(x=>String(x??''));if(test(h))return {hd:h.map((x,j)=>x||('Col'+(j+1))),rows:a.slice(i+1).filter(r=>r.some(v=>v!==null&&v!==''))}}return null}
+function sheetRows(wb,test){for(const n of wb.SheetNames){const d=tbl(XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,defval:null,raw:true}),test);if(d)return d}return null}
+function csvRows(t){t=t.replace(/^\ufeff/,'');const L=t.split(/\r?\n/).find(x=>x.trim())||'';const D=[';','\t',','].map(c=>[c,L.split(c).length]).sort((a,b)=>b[1]-a[1])[0][0];
+const out=[];let r=[],f='',q=false;
+for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c=='"'){if(t[i+1]=='"'){f+='"';i++}else q=false}else f+=c}else if(c=='"'&&f==='')q=true;else if(c===D){r.push(f);f=''}else if(c=='\n'){r.push(f);out.push(r);r=[];f=''}else if(c!='\r')f+=c}
+if(f!==''||r.length){r.push(f);out.push(r)}
+return out.map(r=>r.map(v=>{v=v.replace(/^="(.*)"$/,'$1').trim();return v===''?null:v}))}
+const guess=hd=>({oc:col(hd,/\boc\b|orden/i),sku:col(hd,/art[ií]culo|sku|c[oó]d|producto|item/i),des:col(hd,/desc|nombre/i),qty:(i=>i>=0?i:col(hd,/cant|qty|unid/i))(col(hd,/recib/i)),fec:(i=>i>=0?i:col(hd,/crea/i))(col(hd,/^fecha$/i)),est:col(hd,/estado/i)});
+document.querySelectorAll('input[type=file]').forEach(inp=>inp.onchange=async e=>{
+  const fs=[...e.target.files];if(!fs.length)return;const k=inp.dataset.k,bad=[];
+  for(const f of fs){
+    const t=k==='ib'?h=>h.some(x=>/nro asn/i.test(x)):k==='kx'?h=>h.some(x=>/^documento$/i.test(x)):first;
+    let d;
+    if(/\.(csv|txt)$/i.test(f.name)){const buf=await f.arrayBuffer();let tx=new TextDecoder('utf-8').decode(buf);if(tx.includes('\ufffd'))tx=new TextDecoder('windows-1252').decode(buf);d=tbl(csvRows(tx),t)}
+    else d=sheetRows(XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true}),t);
+    if(!d){bad.push(f.name);continue}
+    if(k==='wms'){const sig=d.hd.join('|');S.map[sig]??=guess(d.hd);S.wms=S.wms.filter(w=>w.name!==f.name);S.wms.push({name:f.name,sig,hd:d.hd,rows:d.rows})}
+    else{S[k]=d;$('n'+(k==='ib'?1:2)).textContent=f.name+' · '+d.rows.length+' filas';$('d'+(k==='ib'?1:2)).classList.add('ok')}
+  }
+  if(k==='wms'){$('d3').classList.add('ok');$('n3').textContent=S.wms.length+' archivo(s) · '+S.wms.reduce((a,w)=>a+w.rows.length,0)+' filas'}
+  if(bad.length)alert('No pude leer la tabla de: '+bad.join(', '));
+  e.target.value='';run();
+});
+let R=[],LAB={};
 function agg(){
-  const ib={},kx={};
-  const {hd:h1,rows:r1}=S.ib,oc=col(h1,/de OC/i),it=col(h1,/culos/i);
-  r1.forEach(r=>{const o=norm(r[oc]);if(!o)return;ib[o]=(ib[o]||0)+(Number(r[it])||0)});
-  const {hd:h2,rows:r2}=S.kx,dc=col(h2,/^documento$/i);
-  r2.forEach(r=>{const o=norm(r[dc]);if(!/^OC-/.test(o))return;kx[o]=(kx[o]||0)+1});
+  const ib={},kx={};LAB={};IBF={};KXF={};
+  const {hd:h1,rows:r1}=S.ib,oc=col(h1,/de OC/i),it=col(h1,/culos/i),fi=[/verificaci/i,/modif/i,/crea/i].map(re=>col(h1,re)).find(i=>i>=0)??-1;
+  r1.forEach(r=>{const o=ock(r[oc]);if(!o)return;LAB[o]=norm(r[oc]);ib[o]=(ib[o]||0)+(Number(r[it])||0);if(fi>=0)upd(IBF,o,iso(r[fi]))});
+  const {hd:h2,rows:r2}=S.kx,dc=col(h2,/^documento$/i),fk=col(h2,/^fecha$/i);
+  r2.forEach(r=>{const v=norm(r[dc]);if(!/^OC-/.test(v))return;const o=ock(v);LAB[o]??=v;kx[o]=(kx[o]||0)+1;if(fk>=0)upd(KXF,o,iso(r[fk]))});
   return Object.keys({...ib,...kx}).sort().map(o=>{
-    const a=ib[o]??null,b=kx[o]??null;
-    let est='OK',nota='';
+    const a=ib[o]??null,b=kx[o]??null;let est='OK',nota='';
     if(a===null){est='DIF';nota='Solo en Kardex (¿ASN de otro día?)'}
     else if(b===null){est='DIF';nota='No ingresó nada al Kardex'}
     else if(a!==b){est='DIF';nota=(a>b?'Faltan ':'Sobran ')+Math.abs(a-b)+' líneas en Kardex'}
-    return {oc:o,ib:a,kx:b,est,nota};
+    return {k:o,oc:LAB[o],ib:a,kx:b,fib:rng(IBF[o]),fkx:rng(KXF[o]),est,nota};
   });
 }
-let R=[];
 function run(){
   if(!S.ib||!S.kx)return;
   R=agg();$('res').hidden=false;draw();
   const n=x=>R.filter(r=>r.est===x).length;
   $('kp').innerHTML=`<div class="k"><b>${R.length}</b>OC totales</div><div class="k"><b style="color:var(--ok)">${n('OK')}</b>Cuadran</div><div class="k"><b style="color:var(--wa)">${n('DIF')}</b>Con diferencia</div>`;
+  review();
 }
 function draw(){
   const q=$('q').value.toUpperCase(),f=$('f').value;
-  $('tb').innerHTML='<tr><th>OC</th><th>Líneas IB</th><th>Líneas Kardex</th><th>Estado</th><th>Observación</th></tr>'+
-  R.filter(r=>r.oc.includes(q)&&(!f||r.est===f)).map(r=>`<tr class="${r.est==='DIF'?'c':''}" data-oc="${r.oc}"><td>${r.oc}</td><td>${r.ib??'—'}</td><td>${r.kx??'—'}</td><td><span class="t ${r.est}">${r.est==='OK'?'Cuadra':'Diferencia'}</span></td><td>${r.nota}</td></tr>`).join('');
-  document.querySelectorAll('tr.c').forEach(tr=>tr.onclick=()=>detail(tr.dataset.oc));
+  $('tb').innerHTML='<tr><th>OC</th><th>Líneas IB</th><th>Líneas Kardex</th><th>Fecha IB</th><th>Fecha Kardex</th><th>Estado</th><th>Observación</th></tr>'+
+  R.filter(r=>r.oc.includes(q)&&(!f||r.est===f)).map(r=>`<tr class="${r.est==='DIF'?'c':''}" data-k="${r.k}"><td>${r.oc}</td><td>${r.ib??'—'}</td><td>${r.kx??'—'}</td><td>${r.fib}</td><td>${r.fkx}</td><td><span class="t ${r.est}">${r.est==='OK'?'Cuadra':'Diferencia'}</span></td><td>${r.nota}</td></tr>`).join('');
+  document.querySelectorAll('tr.c').forEach(tr=>tr.onclick=()=>{F.oc=tr.dataset.k;review();$('rv').scrollIntoView({behavior:'smooth'})});
 }
 $('q').oninput=draw;$('f').onchange=draw;
-function guessWms(){S.map={oc:col(S.wms.hd,/\boc\b|orden|po\b/i),sku:col(S.wms.hd,/art[ií]culo|sku|c[oó]d|producto|item/i),des:col(S.wms.hd,/desc|nombre/i),qty:col(S.wms.hd,/cant|qty|unid/i)};if(S.sel)detail(S.sel)}
-function opts(hd,v){return '<option value="-1">— ninguna —</option>'+hd.map((x,i)=>`<option value="${i}" ${i===v?'selected':''}>${x}</option>`).join('')}
-function detail(oc){
-  S.sel=oc;const d=$('det');d.hidden=false;
-  const kxr=S.kx.rows,h=S.kx.hd,dc=col(h,/^documento$/i),ac=col(h,/^articulo$/i),nc=col(h,/descrip/i),qc=col(h,/^cantidad$/i);
-  const inK=kxr.filter(r=>norm(r[dc])===oc);
-  let html=`<h3 style="margin:0 0 8px">${oc}</h3>`;
-  if(!S.wms){
-    html+=`<p class="m">Sube el <b>WMS detalle por OC</b> (paso 3) para ver qué productos faltaron. Mientras tanto, esto es lo que sí ingresó al Kardex (${inK.length} líneas):</p>`+
-    tabla(['Artículo','Descripción','Cantidad'],inK.map(r=>[r[ac],r[nc],r[qc]]));
-    d.innerHTML=html;d.scrollIntoView({behavior:'smooth'});return;
-  }
-  const m=S.map,W=S.wms;
-  html+=`<div class="row m">Columnas del WMS: OC <select id="mo">${opts(W.hd,m.oc)}</select> Producto <select id="ms">${opts(W.hd,m.sku)}</select> Descripción <select id="md">${opts(W.hd,m.des)}</select> Cantidad <select id="mq">${opts(W.hd,m.qty)}</select></div>`;
-  const wr=W.rows.filter(r=>m.oc<0||norm(r[m.oc]).includes(oc.replace('OC-','')) );
-  const kset=new Map();inK.forEach(r=>kset.set(norm(r[ac]),(kset.get(norm(r[ac]))||0)+(Number(r[qc])||0)));
-  const ws=new Map();
-  wr.forEach(r=>{const s=norm(r[m.sku]);if(!s)return;const o=ws.get(s)||{d:m.des>=0?r[m.des]:'',q:0};o.q+=m.qty>=0?(Number(r[m.qty])||0):0;ws.set(s,o)});
-  const falt=[],parc=[],ok=[];
-  ws.forEach((o,s)=>{const k=kset.get(s);if(k===undefined)falt.push([s,o.d,o.q,0,'No ingresado']);else if(m.qty>=0&&k!==o.q)parc.push([s,o.d,o.q,k,k<o.q?'Ingreso incompleto':'Ingresó de más']);else ok.push([s,o.d,o.q,k,'OK'])});
-  const extra=[...kset].filter(([s])=>!ws.has(s)).map(([s,q])=>[s,'',0,q,'En Kardex, no en WMS']);
-  window._falt=[...falt,...parc,...extra];
-  html+=`<div class="kpis"><div class="k"><b style="color:var(--er)">${falt.length}</b>No ingresados</div><div class="k"><b style="color:var(--wa)">${parc.length}</b>Cantidad distinta</div><div class="k"><b style="color:var(--ok)">${ok.length}</b>Correctos</div></div>`;
-  if(!ws.size)html+=`<p class="m">No encontré productos de esta OC en el WMS. Revisa la columna de OC.</p>`;
-  html+=tabla(['Producto','Descripción','Cant. WMS','Cant. Kardex','Resultado'],window._falt.length?window._falt:[]);
-  html+=`<div class="row"><button class="p" id="ef">Exportar faltantes</button></div>`;
-  d.innerHTML=html;
-  ['mo:oc','ms:sku','md:des','mq:qty'].forEach(p=>{const[i,k]=p.split(':');$(i).onchange=e=>{S.map[k]=+e.target.value;detail(oc)}});
-  $('ef').onclick=()=>csv([['Producto','Descripción','Cant WMS','Cant Kardex','Resultado'],...window._falt],'faltantes_'+oc+'.csv');
-  d.scrollIntoView({behavior:'smooth'});
+let OBS=[];
+function review(){
+  if(!S.kx)return;
+  const h=S.kx.hd,dc=col(h,/^documento$/i),ac=col(h,/^articulo$/i),qc=col(h,/^cantidad$/i),xc=col(h,/^descrip/i),fc=col(h,/^fecha$/i),dn=x=>String(x??'').toUpperCase().replace(/\s+/g,' ').trim();
+  const K={},KD={},KF={};S.kx.rows.forEach(r=>{if(!/^OC-/i.test(String(r[dc]).trim()))return;const o=ock(r[dc]),s=norm(r[ac]);(K[o]??={})[s]=(K[o][s]||0)+(Number(r[qc])||0);if(xc>=0)(KD[o]??={})[dn(r[xc])]=s;if(fc>=0)upd((KF[o]??={}),s,iso(r[fc]))});
+  const W={};XC=0;
+  S.wms.forEach(w=>{const m=S.map[w.sig],fk=ock(w.name);w.rows.forEach(r=>{
+    const o=(m.oc>=0?ock(r[m.oc]):'')||fk,s=norm(r[m.sku]);if(!o||!s)return;if(F.noCan&&m.est>=0&&/cancel/i.test(String(r[m.est]??''))){XC++;return}
+    const e=((W[o]??={})[s]??={d:'',q:0,hq:false,f:''});
+    if(m.des>=0&&!e.d)e.d=r[m.des]??'';const f=m.fec>=0?iso(r[m.fec]):'';if(f&&(!e.f||f<e.f))e.f=f;if(m.qty>=0){e.hq=true;e.q+=Number(r[m.qty])||0}})});
+  OBS=[];
+  Object.keys(W).forEach(o=>{const oc=LAB[o]||('OC-'+o),used=new Set();
+    Object.entries(W[o]).forEach(([s,e])=>{let ks=s,k=K[o]?.[s];if(k===undefined&&e.d){const a=KD[o]?.[dn(e.d)];if(a!==undefined){ks=a;k=K[o][a]}}if(k===undefined&&e.d){const a=fz(KD[o],e.d,used);if(a!==undefined){ks=a;k=K[o][a]}}if(k!==undefined)used.add(ks);
+      if(k===undefined)OBS.push([oc,s,e.d,e.hq?e.q:'',0,e.hq?e.q:'?','No ingresado']);
+      else if(e.hq&&k<e.q)OBS.push([oc,s,e.d,e.q,k,e.q-k,'Ingreso incompleto']);
+      else if(e.hq&&k>e.q)OBS.push([oc,s,e.d,e.q,k,e.q-k,'Ingresó de más']);
+      else OBS.push([oc,s,e.d,e.q,k,0,'OK'])});
+    Object.keys(K[o]||{}).filter(s=>!used.has(s)).forEach(s=>OBS.push([oc,s,'','',K[o][s],'','Solo en Kardex']))});
+  OBS.forEach(r=>{const o=ock(r[0]);r.push(dsp(W[o]?.[r[1]]?.f),rng(IBF[o]),rng(KF[o]?.[r[1]]||KF[o]?.[KD[o]?.[dn(r[2])]]))});
+  const sin=R.filter(r=>r.est==='DIF'&&!W[r.k]&&r.ib!==null);
+  const c=t=>OBS.filter(r=>r[6]===t).length;
+  const sigs={};S.wms.forEach(w=>(sigs[w.sig]??={hd:w.hd,n:0}).n++);
+  const mp=Object.entries(sigs).map(([sig,v])=>{const m=S.map[sig];const sel=(k,l)=>`${l} <select data-sig="${esc(sig)}" data-k="${k}"><option value="-1">— ninguna —</option>${v.hd.map((x,i)=>`<option value="${i}" ${i===m[k]?'selected':''}>${esc(x)}</option>`).join('')}</select>`;
+    return `<div class="row m">${v.n} archivo(s): ${sel('oc','OC')} ${sel('sku','Producto')} ${sel('des','Descripción')} ${sel('qty','Cantidad')} ${sel('fec','Fecha')}</div>`}).join('');
+  const rows=OBS.filter(r=>(!F.oc||ock(r[0])===F.oc)&&(!F.only||r[6]!=='OK')&&(r[0]+r[1]+r[2]).toUpperCase().includes(F.q));
+  const ocs=[...new Set(OBS.map(r=>r[0]))].sort();
+  $('rv').innerHTML=`<h3 style="margin:0 0 4px">Productos observados para ingreso</h3>
+  <p class="m" style="margin:0 0 10px">Sube los WMS detalle (puedes elegir varios archivos a la vez; se van sumando).</p>`+
+  (S.wms.length?`<div class="kpis"><div class="k"><b>${Object.keys(W).length}</b>OC revisadas</div><div class="k"><b style="color:var(--er)">${c('No ingresado')}</b>No ingresados</div><div class="k"><b style="color:var(--wa)">${c('Ingreso incompleto')+c('Ingresó de más')}</b>Cantidad distinta</div><div class="k"><b>${c('Solo en Kardex')}</b>Solo en Kardex</div><div class="k"><b>${OBS.reduce((a,r)=>a+((r[6]==='No ingresado'||r[6]==='Ingreso incompleto')?(Number(r[5])||0):0),0)}</b>Unidades por ingresar</div></div>
+  <details class="m" style="margin-top:8px"><summary>Columnas del WMS (ajustar si no cuadra)</summary>${mp}</details>
+  <div class="row"><select id="fo"><option value="">Todas las OC</option>${ocs.map(o=>`<option value="${ock(o)}" ${F.oc===ock(o)?'selected':''}>${o}</option>`).join('')}</select><input class="q" id="fq" placeholder="Buscar producto…" value="${esc(F.q)}"><label class="m"><input type="checkbox" id="fy" ${F.only?'checked':''}> Solo observados</label><label class="m"><input type="checkbox" id="fc" ${F.noCan?'checked':''}> Excluir LPN canceladas${XC?' ('+XC+')':''}</label><button class="p" id="eo">Exportar</button><button id="cl">Quitar WMS</button></div>
+  ${sin.length?`<p class="m">Con diferencia y sin detalle WMS aún: <b>${sin.map(r=>r.oc).join(', ')}</b></p>`:'<p class="m">Todas las OC con diferencia tienen detalle cargado.</p>'}
+  <div class="wrap"><table><tr><th>OC</th><th>Producto</th><th>Descripción</th><th>Cant. recibida WMS</th><th>Cant. Kardex</th><th>Diferencia a ingresar</th><th>Resultado</th><th>Fecha WMS</th><th>Fecha IB</th><th>Fecha Kardex</th></tr>${rows.map(r=>`<tr>${r.slice(0,6).map(x=>`<td>${esc(x)}</td>`).join('')}<td><span class="t ${r[6]==='OK'?'OK':r[6]==='No ingresado'?'ERR':'DIF'}">${r[6]}</span></td>${r.slice(7,10).map(x=>`<td>${x}</td>`).join('')}</tr>`).join('')||'<tr><td colspan="10" class="m">Sin productos observados con este filtro.</td></tr>'}</table></div>`:'');
+  const g=id=>$(id);if(!S.wms.length)return;
+  g('fo').onchange=e=>{F.oc=e.target.value;review()};
+  g('fq').oninput=e=>{F.q=e.target.value.toUpperCase();const p=e.target.selectionStart;review();g('fq').focus();g('fq').setSelectionRange(p,p)};
+  g('fc').onchange=e=>{F.noCan=e.target.checked;review()};
+  g('fy').onchange=e=>{F.only=e.target.checked;review()};
+  g('cl').onclick=()=>{S.wms=[];S.map={};$('d3').classList.remove('ok');$('n3').textContent='Subir uno o varios archivos';F.oc='';review()};
+  g('eo').onclick=()=>csv([['OC','Producto','Descripción','Cant recibida WMS','Cant Kardex','Diferencia a ingresar','Resultado','Fecha WMS','Fecha IB','Fecha Kardex'],...rows],'productos_observados.csv');
+  document.querySelectorAll('select[data-sig]').forEach(s=>s.onchange=e=>{S.map[e.target.dataset.sig][e.target.dataset.k]=+e.target.value;review()});
 }
-function tabla(h,rows){return `<div class="wrap"><table><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr>${rows.map(r=>`<tr>${r.map((c,i)=>i===r.length-1&&h[h.length-1]==='Resultado'?`<td><span class="t ${c==='OK'?'OK':c==='No ingresado'?'ERR':'DIF'}">${c}</span></td>`:`<td>${c??''}</td>`).join('')}</tr>`).join('')}</table></div>`}
-function csv(a,n){const t=a.map(r=>r.map(c=>'"'+String(c??'').replace(/"/g,'""')+'"').join(',')).join('\n');const b=new Blob(['\ufeff'+t],{type:'text/csv'});const l=document.createElement('a');l.href=URL.createObjectURL(b);l.download=n;l.click()}
-$('ex').onclick=()=>csv([['OC','Líneas IB','Líneas Kardex','Estado','Observación'],...R.map(r=>[r.oc,r.ib,r.kx,r.est,r.nota])],'resumen_oc.csv');
+async function saveFile(name,data){try{const d=window.claude&&await claude.use('downloads');if(d){await d.save({filename:name,data});return}}catch(e){if(e&&e.code==='declined')return}const l=document.createElement('a');l.href=URL.createObjectURL(data);l.download=name;l.click()}
+function csv(a,n){const t=a.map(r=>r.map(c=>'"'+String(c??'').replace(/"/g,'""')+'"').join(',')).join('\n');const b=new Blob(['\ufeff'+t],{type:'text/csv'});saveFile(n,b)}
+$('ex').onclick=()=>csv([['OC','Líneas IB','Líneas Kardex','Fecha IB','Fecha Kardex','Estado','Observación'],...R.map(r=>[r.oc,r.ib,r.kx,r.fib,r.fkx,r.est,r.nota])],'resumen_oc.csv');
 </script>
 </body>
 </html>
